@@ -13,7 +13,7 @@
 Pytorch implementation of the paper "[EvoAR-SFNet: Evolutionary Autoregressive Spatial-Frequency Network for Remote Sensing Pansharpening]()" (The paper has been submitted IEEE Transactions on Geoscience and Remote Sensing（TGRS） ).
 
 ## Introduction
-![fig1](.\image\fig1.png)
+![fig1](./image/fig1.png)
 - We design a Spatial-Frequency Dual-Stream framework that integrates ARConv and FDConv, with the BDFB module further enhancing the fusion of spatial and frequency features.
 - We develop an EvoAR module, where multi-stage predictions are progressively refined through autoregressive feedback, while an evolutionary strategy adaptively adjusts the loss weights of each stage.
 - Comprehensive experiments on multiple benchmark datasets (WV3, QB, and GF2) show that our method achieves competitive performance compared with existing approaches.
@@ -137,11 +137,11 @@ We present both qualitative and quantitative analyses of pansharpening results o
 
 **Visual comparison of pansharpening results obtained by different methods on low-resolution**
 
-![fige1](.\image\fige1.png)
+![fige1](./image/fige1.png)
 
 **Visual comparison of pansharpening results obtained by different methods on low-resolution**
 
-![fige2](.\image\fige2.png)
+![fige2](./image/fige2.png)
 
 **Performance on the WV3 Dataset (Mean±Std). Best in bold, second-best in italics**
 
