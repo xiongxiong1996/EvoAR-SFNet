@@ -144,9 +144,9 @@ def save_bestpoint(
 
 def train(config):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    epochs, lr, ckpt, batch_size, hw_range, task, checkpoint_save_path = (
+    epochs, lr, ckpt, batch_size, hw_range, task, checkpoint_save_path, fusion_type = (
         config.epochs, config.lr, config.ckpt, config.batch_size,
-        config.hw_range, config.task, config.checkpoint_save_path
+        config.hw_range, config.task, config.checkpoint_save_path, config.fusion_type
     )
     # 备份代码
     backup_code(checkpoint_save_path)
@@ -179,7 +179,7 @@ def train(config):
     elif task in ["qb", "gf2"]:
         pan_channels, lms_channels = 1, 4
 
-    model = EvoARFSNet(pan_channels, lms_channels).to(device)
+    model = EvoARFSNet(pan_channels, lms_channels, fusion_type=fusion_type).to(device)
 
     # model = nn.DataParallel(model)
     criterion = nn.L1Loss().to(device)
@@ -422,6 +422,13 @@ if __name__ == "__main__":
         type=str,
         choices=["wv3", "qb", "gf2"],
         help="Model to train (choices: wv3, qb, gf2).",
+    )
+    parser.add_argument(
+        "--fusion_type",
+        default="implicit",
+        type=str,
+        choices=["add", "concat", "explicit", "implicit"],
+        help="Fusion type for the spatial-frequency cross-domain fusion.",
     )
     config = parser.parse_args()
     train(config)

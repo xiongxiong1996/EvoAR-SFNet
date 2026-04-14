@@ -160,8 +160,9 @@ class ImplicitDecoder(nn.Module):
 
 
 class EvoARFSNet(nn.Module):
-    def __init__(self, pan_channels=1, lms_channels=8):
+    def __init__(self, pan_channels=1, lms_channels=8, fusion_type="implicit"):
         super(EvoARFSNet, self).__init__()
+        self.fusion_type = fusion_type
         # head conv
         self.head_conv = nn.Conv2d(pan_channels + lms_channels, 32, 3, 1, 1)
         # space branch
@@ -190,7 +191,7 @@ class EvoARFSNet(nn.Module):
         self.cross_attn_fd = CrossAttention(channels=128)
         self.feedback_proj_fd = nn.Conv2d(lms_channels, 128, kernel_size=1)
         self.tail_conv_f = nn.Conv2d(32, lms_channels, 3, 1, 1)
-        # fusion BDFB
+        # fusion
         self.implicit_decoder = ImplicitDecoder(
             in_channels=32,
             freq_dim=32,
@@ -198,6 +199,11 @@ class EvoARFSNet(nn.Module):
             omega=30,
             scale=10.0
         )
+        self.explicit_gate = nn.Sequential(
+            nn.Conv2d(64, 32, kernel_size=1, stride=1, padding=0),
+            nn.Sigmoid()
+        )
+        self.concat_fuse = nn.Conv2d(64, 32, kernel_size=1, stride=1, padding=0)
         self.tail_conv = nn.Conv2d(32, lms_channels, 3, 1, 1)
 
     def forward_ar_branch(self, x, epoch, hw_range):
@@ -274,7 +280,18 @@ class EvoARFSNet(nn.Module):
         pred1, pred2, pred3, x5_ar = self.forward_ar_branch(x, epoch, hw_range)
         fd_pred1, fd_pred2, fd_pred3, x5_fd = self.forward_fd_branch(x, epoch, hw_range)
 
-        x_refined = self.implicit_decoder(x5_ar, x5_fd)
+        if self.fusion_type == "implicit":
+            x_refined = self.implicit_decoder(x5_ar, x5_fd)
+        elif self.fusion_type == "explicit":
+            gate = self.explicit_gate(torch.cat([x5_ar, x5_fd], dim=1))
+            x_refined = gate * x5_ar + (1 - gate) * x5_fd
+        elif self.fusion_type == "add":
+            x_refined = x5_ar + x5_fd
+        elif self.fusion_type == "concat":
+            x_refined = self.concat_fuse(torch.cat([x5_ar, x5_fd], dim=1))
+        else:
+            raise ValueError(f"Unsupported fusion_type: {self.fusion_type}")
+
         output = self.tail_conv(x_refined)
 
         return (
