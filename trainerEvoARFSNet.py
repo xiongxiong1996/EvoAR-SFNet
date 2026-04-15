@@ -25,20 +25,21 @@ torch.cuda.manual_seed_all(SEED)
 cudnn.deterministic = True
 
 class LossWeightEvolution:
-    def __init__(self, population_size=10, max_generations=100, initial_mutation_rate=0.03, min_mutation_rate=0.001, top_k=3, seed=42):
+    def __init__(self, population_size=10, max_generations=100, initial_mutation_rate=0.03, min_mutation_rate=0.001, top_k=3, seed=42, base_weights=None):
         self.population_size = population_size
         self.initial_mutation_rate = initial_mutation_rate
         self.max_generations = max_generations
         self.min_mutation_rate = min_mutation_rate
         self.top_k = top_k
         self.current_generation = 0
-        self.weights_dim = 7  # loss1, loss2, loss3, loss_f
+        self.base_weights = np.array(base_weights, dtype=np.float32)
+        self.weights_dim = len(self.base_weights)
         self.rng = np.random.default_rng(seed)
         self.population = self._initialize_population()
 
     def _initialize_population(self):
         pop = []
-        base_weights = np.array([0.05, 0.05, 0.1, 0.05, 0.05, 0.1, 0.6])
+        base_weights = self.base_weights.copy()
         
         for _ in range(self.population_size):
             # Add small random perturbation to the base weights
@@ -80,6 +81,29 @@ class LossWeightEvolution:
 
     def get_population(self):
         return self.population
+
+
+def build_base_weights(num_refine):
+    num_stage_outputs = num_refine + 1
+    stage_priority = np.array([1 if idx < 2 else 2 for idx in range(num_stage_outputs)], dtype=np.float32)
+    branch_weights = 0.4 * stage_priority / (2 * stage_priority.sum())
+    base_weights = np.concatenate([branch_weights, branch_weights, np.array([0.6], dtype=np.float32)])
+    return base_weights.tolist()
+
+
+def compute_losses(outputs, gt, criterion, num_refine):
+    num_stage_outputs = num_refine + 1
+    spatial_outs = outputs[:num_stage_outputs]
+    freq_outs = outputs[num_stage_outputs:2 * num_stage_outputs]
+    fused_out = outputs[-1]
+    loss_items = [criterion(out, gt) for out in spatial_outs]
+    loss_items.extend(criterion(out, gt) for out in freq_outs)
+    loss_items.append(criterion(fused_out, gt))
+    return loss_items, fused_out
+
+
+def weighted_sum(loss_items, weights):
+    return sum(weight * loss for weight, loss in zip(weights, loss_items))
     
 
 # 备份代码
@@ -144,9 +168,9 @@ def save_bestpoint(
 
 def train(config):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    epochs, lr, ckpt, batch_size, hw_range, task, checkpoint_save_path, fusion_type = (
+    epochs, lr, ckpt, batch_size, hw_range, task, checkpoint_save_path, fusion_type, num_refine = (
         config.epochs, config.lr, config.ckpt, config.batch_size,
-        config.hw_range, config.task, config.checkpoint_save_path, config.fusion_type
+        config.hw_range, config.task, config.checkpoint_save_path, config.fusion_type, config.num_refine
     )
     # 备份代码
     backup_code(checkpoint_save_path)
@@ -179,7 +203,7 @@ def train(config):
     elif task in ["qb", "gf2"]:
         pan_channels, lms_channels = 1, 4
 
-    model = EvoARFSNet(pan_channels, lms_channels, fusion_type=fusion_type).to(device)
+    model = EvoARFSNet(pan_channels, lms_channels, fusion_type=fusion_type, num_refine=num_refine).to(device)
 
     # model = nn.DataParallel(model)
     criterion = nn.L1Loss().to(device)
@@ -190,7 +214,7 @@ def train(config):
     
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=160, T_mult=1, eta_min=1e-6)
     epoch = 1
-    final_weights = [0.05, 0.05, 0.1, 0.05, 0.05, 0.1, 0.6]
+    final_weights = build_base_weights(num_refine)
     freeze_conv_epoch = 100
     freeze_evo_epoch = 160
     if os.path.isfile(checkpoint_path):
@@ -201,14 +225,19 @@ def train(config):
         scheduler.load_state_dict(checkpoint["scheduler"])
         print(f"=> successfully loaded checkpoint from '{checkpoint_path}'")
     print("Start training...")
-    evolver = LossWeightEvolution(population_size=3,max_generations=freeze_evo_epoch-freeze_conv_epoch, top_k=2)
+    evolver = LossWeightEvolution(
+        population_size=3,
+        max_generations=freeze_evo_epoch-freeze_conv_epoch,
+        top_k=2,
+        base_weights=final_weights
+    )
 
     while epoch <= epochs + 1:
         current_population = evolver.get_population()
         fitness_scores = []
         if epoch <=freeze_evo_epoch:
             if epoch <=freeze_conv_epoch:
-                    best_weights = [0.05, 0.05, 0.1, 0.05, 0.05, 0.1, 0.6]
+                    best_weights = build_base_weights(num_refine)
                     weights = best_weights
                     model.train()
                     for iteration, batch in tqdm(enumerate(training_data_loader), total=len(training_data_loader), bar_format="{l_bar}{bar:10}{r_bar}"):
@@ -216,22 +245,9 @@ def train(config):
                         lms = batch[1].to(device)
                         pan = batch[4].to(device)
                         optimizer.zero_grad()
-                        outs1, outs2, outs3,outf1,outf2,outf3, out_fused = model(pan, lms, epoch, hw_range=hw_range)
-                        loss1 = criterion(outs1, gt)
-                        loss2 = criterion(outs2, gt)
-                        loss3 = criterion(outs3, gt)
-                        loss4 = criterion(outf1, gt)
-                        loss5 = criterion(outf2, gt)
-                        loss6 = criterion(outf3, gt)
-                        loss_f = criterion(out_fused, gt)
-                        # Evolutionary weight loss
-                        loss = (weights[0] * loss1 +
-                                weights[1] * loss2 +
-                                weights[2] * loss3 +
-                                weights[3] * loss4 +
-                                weights[4] * loss5 +
-                                weights[5] * loss6 +
-                                weights[6] * loss_f)
+                        outputs = model(pan, lms, epoch, hw_range=hw_range)
+                        loss_items, _ = compute_losses(outputs, gt, criterion, num_refine)
+                        loss = weighted_sum(loss_items, weights)
                         loss.backward()
                         optimizer.step()
                                         
@@ -243,7 +259,8 @@ def train(config):
                             gt = test_batch[0].to(device)
                             lms = test_batch[1].to(device)
                             pan = test_batch[4].to(device)
-                            _, _, _, _, _, _, out_fused = model(pan, lms, epoch, hw_range=hw_range)
+                            outputs = model(pan, lms, epoch, hw_range=hw_range)
+                            _, out_fused = compute_losses(outputs, gt, criterion, num_refine)
                             total_l1 += F.l1_loss(out_fused, gt).item()  # 单个值
                     avg_l1 = total_l1 / len(test_data_loader)
                     fitness_scores.append(-avg_l1)  # 注意这里：要最大化 L1 的负值 == 最小化 L1
@@ -260,22 +277,9 @@ def train(config):
                         lms = batch[1].to(device)
                         pan = batch[4].to(device)
                         optimizer.zero_grad()
-                        outs1, outs2, outs3,outf1,outf2,outf3, out_fused = model(pan, lms, epoch, hw_range=hw_range)
-                        loss1 = criterion(outs1, gt)
-                        loss2 = criterion(outs2, gt)
-                        loss3 = criterion(outs3, gt)
-                        loss4 = criterion(outf1, gt)
-                        loss5 = criterion(outf2, gt)
-                        loss6 = criterion(outf3, gt)
-                        loss_f = criterion(out_fused, gt)
-                        # Evolutionary weight loss
-                        loss = (weights[0] * loss1 +
-                                weights[1] * loss2 +
-                                weights[2] * loss3 +
-                                weights[3] * loss4 +
-                                weights[4] * loss5 +
-                                weights[5] * loss6 +
-                                weights[6] * loss_f)
+                        outputs = model(pan, lms, epoch, hw_range=hw_range)
+                        loss_items, _ = compute_losses(outputs, gt, criterion, num_refine)
+                        loss = weighted_sum(loss_items, weights)
                         loss.backward()
                         # 对当前权重组产生的梯度做归一化
                         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0/len(current_population))
@@ -289,7 +293,8 @@ def train(config):
                             gt = test_batch[0].to(device)
                             lms = test_batch[1].to(device)
                             pan = test_batch[4].to(device)
-                            _, _, _, _, _, _, out_fused = model(pan, lms, epoch, hw_range=hw_range)
+                            outputs = model(pan, lms, epoch, hw_range=hw_range)
+                            _, out_fused = compute_losses(outputs, gt, criterion, num_refine)
                             total_l1 += F.l1_loss(out_fused, gt).item()  # 单个值
                     avg_l1 = total_l1 / len(test_data_loader)
                     fitness_scores.append(-avg_l1)  # 注意这里：要最大化 L1 的负值 == 最小化 L1
@@ -321,22 +326,9 @@ def train(config):
                 lms = batch[1].to(device)
                 pan = batch[4].to(device)
                 optimizer.zero_grad()
-                outs1, outs2, outs3,outf1,outf2,outf3, out_fused = model(pan, lms, epoch, hw_range=hw_range)
-                loss1 = criterion(outs1, gt)
-                loss2 = criterion(outs2, gt)
-                loss3 = criterion(outs3, gt)
-                loss4 = criterion(outf1, gt)
-                loss5 = criterion(outf2, gt)
-                loss6 = criterion(outf3, gt)
-                loss_f = criterion(out_fused, gt)
-                # Evolutionary weight loss
-                loss = (weights[0] * loss1 +
-                        weights[1] * loss2 +
-                        weights[2] * loss3 +
-                        weights[3] * loss4 +
-                        weights[4] * loss5 +
-                        weights[5] * loss6 +
-                        weights[6] * loss_f)
+                outputs = model(pan, lms, epoch, hw_range=hw_range)
+                loss_items, _ = compute_losses(outputs, gt, criterion, num_refine)
+                loss = weighted_sum(loss_items, weights)
                 loss.backward()
                 optimizer.step()  
             # === 验证阶段（关键修改） ===
@@ -347,7 +339,8 @@ def train(config):
                             gt = test_batch[0].to(device)
                             lms = test_batch[1].to(device)
                             pan = test_batch[4].to(device)
-                            _, _, _, _, _, _, out_fused = model(pan, lms, epoch, hw_range=hw_range)
+                            outputs = model(pan, lms, epoch, hw_range=hw_range)
+                            _, out_fused = compute_losses(outputs, gt, criterion, num_refine)
                             total_l1 += F.l1_loss(out_fused, gt).item()  # 单个值
             avg_l1 = total_l1 / len(test_data_loader)
             fitness_scores.append(-avg_l1)  # 注意这里：要最大化 L1 的负值 == 最小化 L1
@@ -429,6 +422,13 @@ if __name__ == "__main__":
         type=str,
         choices=["add", "concat", "explicit", "implicit"],
         help="Fusion type for the spatial-frequency cross-domain fusion.",
+    )
+    parser.add_argument(
+        "--num_refine",
+        default=2,
+        type=int,
+        choices=[1, 2, 3],
+        help="Number of autoregressive refinement steps.",
     )
     config = parser.parse_args()
     train(config)

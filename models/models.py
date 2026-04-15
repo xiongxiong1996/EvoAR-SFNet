@@ -160,9 +160,10 @@ class ImplicitDecoder(nn.Module):
 
 
 class EvoARFSNet(nn.Module):
-    def __init__(self, pan_channels=1, lms_channels=8, fusion_type="implicit"):
+    def __init__(self, pan_channels=1, lms_channels=8, fusion_type="implicit", num_refine=2):
         super(EvoARFSNet, self).__init__()
         self.fusion_type = fusion_type
+        self.num_refine = num_refine
         # head conv
         self.head_conv = nn.Conv2d(pan_channels + lms_channels, 32, 3, 1, 1)
         # space branch
@@ -217,27 +218,30 @@ class EvoARFSNet(nn.Module):
         x5 = self.up2(x4, x1)
         x5 = self.rb5(x5, epoch, hw_range)
         pred1 = self.tail_conv_s(x5)
+        preds = [pred1]
+        prev_pred = pred1
+        prev_x4_skip = x2
+        prev_x5_skip = x1
+        final_feat = x5
 
-        pred1_down = F.interpolate(pred1, scale_factor=0.25, mode='bilinear', align_corners=False)
-        pred1_proj = self.feedback_proj(pred1_down)
-        fused1 = self.cross_attn(x3, pred1_proj)
+        for _ in range(self.num_refine):
+            pred_down = F.interpolate(prev_pred, scale_factor=0.25, mode='bilinear', align_corners=False)
+            pred_proj = self.feedback_proj(pred_down)
+            fused = self.cross_attn(x3, pred_proj)
 
-        x4_fb1 = self.up1(fused1, x2)
-        x4_fb1 = self.rb4(x4_fb1, epoch, hw_range)
-        x5_fb1 = self.up2(x4_fb1, x1)
-        x5_fb1 = self.rb5(x5_fb1, epoch, hw_range)
-        pred2 = self.tail_conv_s(x5_fb1)
-        
-        pred2_down = F.interpolate(pred2, scale_factor=0.25, mode='bilinear', align_corners=False)
-        pred2_proj = self.feedback_proj(pred2_down)
-        fused2 = self.cross_attn(x3, pred2_proj)
+            x4_fb = self.up1(fused, prev_x4_skip)
+            x4_fb = self.rb4(x4_fb, epoch, hw_range)
+            x5_fb = self.up2(x4_fb, prev_x5_skip)
+            x5_fb = self.rb5(x5_fb, epoch, hw_range)
+            pred_fb = self.tail_conv_s(x5_fb)
 
-        x4_fb2 = self.up1(fused2, x4_fb1)
-        x4_fb2 = self.rb4(x4_fb2, epoch, hw_range)
-        x5_fb2 = self.up2(x4_fb2, x5_fb1)
-        x5_fb2 = self.rb5(x5_fb2, epoch, hw_range)
-        pred3 = self.tail_conv_s(x5_fb2)
-        return pred1, pred2, pred3,x5_fb2
+            preds.append(pred_fb)
+            prev_pred = pred_fb
+            prev_x4_skip = x4_fb
+            prev_x5_skip = x5_fb
+            final_feat = x5_fb
+
+        return preds, final_feat
 
     def forward_fd_branch(self, x, epoch, hw_range):
         x1 = self.fdrb1(x)
@@ -250,35 +254,36 @@ class EvoARFSNet(nn.Module):
         x5 = self.fdup2(x4, x1)
         x5 = self.fdrb5(x5)
         pred1 = self.tail_conv_f(x5)
-        pred1_down = F.interpolate(pred1, scale_factor=0.25, mode='bilinear', align_corners=False)
-        pred1_proj = self.feedback_proj_fd(pred1_down)
-        
-        fused1 = self.cross_attn_fd(x3, pred1_proj)
-        x4_fb1 = self.fdup1(fused1, x2)
-        # 注意这里 FDConv_Block 的 forward 不接受 epoch 和 hw_range，所以不要传
-        x4_fb1 = self.fdrb4(x4_fb1)
-        x5_fb1 = self.fdup2(x4_fb1, x1)
-        x5_fb1 = self.fdrb5(x5_fb1)
-        pred2 = self.tail_conv_f(x5_fb1)
-        pred2_down = F.interpolate(pred2, scale_factor=0.25, mode='bilinear', align_corners=False)
-        pred2_proj = self.feedback_proj_fd(pred2_down)
-        
-        fused2 = self.cross_attn_fd(x3, pred2_proj)
-        x4_fb2 = self.fdup1(fused2, x4_fb1)
-        # 这里同上，不传额外参数
-        x4_fb2 = self.fdrb4(x4_fb2)
-        x5_fb2 = self.fdup2(x4_fb2, x5_fb1)
-        x5_fb2 = self.fdrb5(x5_fb2)
-        pred3 = self.tail_conv_f(x5_fb2)
+        preds = [pred1]
+        prev_pred = pred1
+        prev_x4_skip = x2
+        prev_x5_skip = x1
+        final_feat = x5
 
-        return pred1, pred2, pred3,x5_fb2
+        for _ in range(self.num_refine):
+            pred_down = F.interpolate(prev_pred, scale_factor=0.25, mode='bilinear', align_corners=False)
+            pred_proj = self.feedback_proj_fd(pred_down)
+            fused = self.cross_attn_fd(x3, pred_proj)
+            x4_fb = self.fdup1(fused, prev_x4_skip)
+            x4_fb = self.fdrb4(x4_fb)
+            x5_fb = self.fdup2(x4_fb, prev_x5_skip)
+            x5_fb = self.fdrb5(x5_fb)
+            pred_fb = self.tail_conv_f(x5_fb)
+
+            preds.append(pred_fb)
+            prev_pred = pred_fb
+            prev_x4_skip = x4_fb
+            prev_x5_skip = x5_fb
+            final_feat = x5_fb
+
+        return preds, final_feat
 
     def forward(self, pan, lms, epoch, hw_range):
         x = torch.cat([pan, lms], dim=1)
         x = self.head_conv(x)
 
-        pred1, pred2, pred3, x5_ar = self.forward_ar_branch(x, epoch, hw_range)
-        fd_pred1, fd_pred2, fd_pred3, x5_fd = self.forward_fd_branch(x, epoch, hw_range)
+        ar_preds, x5_ar = self.forward_ar_branch(x, epoch, hw_range)
+        fd_preds, x5_fd = self.forward_fd_branch(x, epoch, hw_range)
 
         if self.fusion_type == "implicit":
             x_refined = self.implicit_decoder(x5_ar, x5_fd)
@@ -293,13 +298,7 @@ class EvoARFSNet(nn.Module):
             raise ValueError(f"Unsupported fusion_type: {self.fusion_type}")
 
         output = self.tail_conv(x_refined)
-
-        return (
-            lms + pred1,
-            lms + pred2,
-            lms + pred3,
-            lms + fd_pred1,
-            lms + fd_pred2,
-            lms + fd_pred3,
-            lms + output,
-        )
+        outputs = [lms + pred for pred in ar_preds]
+        outputs.extend([lms + pred for pred in fd_preds])
+        outputs.append(lms + output)
+        return tuple(outputs)
