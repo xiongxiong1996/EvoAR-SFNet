@@ -193,18 +193,22 @@ class EvoARFSNet(nn.Module):
         self.feedback_proj_fd = nn.Conv2d(lms_channels, 128, kernel_size=1)
         self.tail_conv_f = nn.Conv2d(32, lms_channels, 3, 1, 1)
         # fusion
-        self.implicit_decoder = ImplicitDecoder(
+
+        if fusion_type == "explicit":
+            self.explicit_gate = nn.Sequential(
+            nn.Conv2d(64, 32, kernel_size=1, stride=1, padding=0),
+            nn.Sigmoid()
+            )
+        elif fusion_type == "implicit":
+            self.implicit_decoder = ImplicitDecoder(
             in_channels=32,
             freq_dim=32,
             hidden_dims=[64, 64, 64],
             omega=30,
             scale=10.0
-        )
-        self.explicit_gate = nn.Sequential(
-            nn.Conv2d(64, 32, kernel_size=1, stride=1, padding=0),
-            nn.Sigmoid()
-        )
-        self.concat_fuse = nn.Conv2d(64, 32, kernel_size=1, stride=1, padding=0)
+            )
+        elif fusion_type == "concat":
+            self.concat_fuse = nn.Conv2d(64, 32, kernel_size=1, stride=1, padding=0)
         self.tail_conv = nn.Conv2d(32, lms_channels, 3, 1, 1)
 
     def forward_ar_branch(self, x, epoch, hw_range):
@@ -278,7 +282,7 @@ class EvoARFSNet(nn.Module):
 
         return preds, final_feat
 
-    def forward(self, pan, lms, epoch, hw_range):
+    def forward(self, pan, lms, epoch, hw_range, return_features=False):
         x = torch.cat([pan, lms], dim=1)
         x = self.head_conv(x)
 
@@ -301,4 +305,12 @@ class EvoARFSNet(nn.Module):
         outputs = [lms + pred for pred in ar_preds]
         outputs.extend([lms + pred for pred in fd_preds])
         outputs.append(lms + output)
+
+        if return_features:
+            feat_dict = {
+                "x5_ar": x5_ar,
+                "x5_fd": x5_fd,
+                "x_refined": x_refined
+            }
+            outputs.append(feat_dict)
         return tuple(outputs)

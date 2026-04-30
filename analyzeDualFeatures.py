@@ -39,6 +39,20 @@ def parse_args():
         help="Dataset type.",
     )
     parser.add_argument(
+        "--fusion_type",
+        default="implicit",
+        type=str,
+        choices=["add", "concat", "explicit", "implicit"],
+        help="Fusion type used by the checkpoint.",
+    )
+    parser.add_argument(
+        "--num_refine",
+        default=2,
+        type=int,
+        choices=[1, 2, 3],
+        help="Number of autoregressive refinement steps used by the checkpoint.",
+    )
+    parser.add_argument(
         "--hw_range",
         nargs=2,
         type=int,
@@ -289,13 +303,24 @@ def write_summary_text(summary: Dict[str, float], path: str):
         f.write("\n".join(lines) + "\n")
 
 
-def get_model(task: str, ckpath: str, device: torch.device):
+def get_model(
+    task: str,
+    ckpath: str,
+    device: torch.device,
+    fusion_type: str,
+    num_refine: int,
+):
     if task == "wv3":
         pan_channels, lms_channels = 1, 8
     else:
         pan_channels, lms_channels = 1, 4
 
-    model = EvoARFSNet(pan_channels, lms_channels).to(device)
+    model = EvoARFSNet(
+        pan_channels,
+        lms_channels,
+        fusion_type=fusion_type,
+        num_refine=num_refine,
+    ).to(device)
     checkpoint = torch.load(ckpath, map_location=device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
@@ -388,7 +413,13 @@ def main():
     if not indices:
         raise ValueError("No valid sample indices were selected.")
 
-    model = get_model(args.task, args.ckpath, device)
+    model = get_model(
+        args.task,
+        args.ckpath,
+        device,
+        args.fusion_type,
+        args.num_refine,
+    )
 
     stats_rows = []
     for idx in indices:
