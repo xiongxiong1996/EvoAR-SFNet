@@ -396,8 +396,8 @@ If this project is helpful to your work, please consider citing the paper after 
 ```bibtex
 @article{evoar_sfnet,
   title   = {EvoAR-SFNet: Evolutionary Autoregressive Spatial-Frequency Network for Remote Sensing Pansharpening},
-  author  = {Author Names},
-  journal = {IEEE Transactions on Geoscience and Remote Sensing},
-  year    = {202X}
+  author  = {Shaohua Duan, Chunjie Zhang, Xiaolong Zheng, Yao Zhao},
+  journal = {IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing},
+  year    = {2026}
 }
 ```
