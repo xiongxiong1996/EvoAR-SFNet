@@ -399,5 +399,6 @@ If this project is helpful to your work, please consider citing the paper after 
   author  = {Shaohua Duan, Chunjie Zhang, Xiaolong Zheng, Yao Zhao},
   journal = {IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing},
   year    = {2026}
+  DOI    = {10.1109/JSTARS.2026.3694553}
 }
 ```
